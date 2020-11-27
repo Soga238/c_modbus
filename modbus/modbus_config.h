@@ -18,8 +18,8 @@ extern "C" {
 #endif
 
 /* Includes --------------------------------------------------------*/
-#include "../utility/lz_types.h"
-#include "../utility/lz_utils.h"
+#include "../../utility/lz_types.h"
+#include "../../utility/lz_utils.h"
 
 /* Global variables ------------------------------------------------*/
 /* Global typedef --------------------------------------------------*/

@@ -35,6 +35,9 @@
 #define CALC_MODBUS_CRC16(PTR, SIZE)     MODBUS_CRC16(PTR, SIZE)
 #define VALID_MODBUS_FMT(PTR, SIZE)      valid_modbus_crc(PTR, SIZE)
 
+#define CALC_READ_COILS_REQUIRED_BYTES(__COIL_NUMBER)           \
+    ((((__COIL_NUMBER) & 0x0007) ? 1 : 0) + ((__COIL_NUMBER) >> 3))
+
 #ifndef FALL_THROUGH
 #define FALL_THROUGH()
 
@@ -55,6 +58,52 @@
 /* Private variables -----------------------------------------------*/
 /* Private function prototypes -------------------------------------*/
 /* Private functions -----------------------------------------------*/
+
+bool mb_control_init(mb_control_t *ptCtl, serial_ctl_t *ptSerialConfig)
+{
+    enum { START = 0 };
+
+    if ((NULL == ptCtl) || (NULL == ptSerialConfig)) {
+        return false;
+    }
+
+    if ((0 == ptSerialConfig->hwRcvBufSize) ||
+        (0 == ptSerialConfig->hwSndBufSize)) {
+        return false;
+    }
+
+    if ((NULL == ptSerialConfig->fnRecv) ||
+        (NULL == ptSerialConfig->fnSend)) {
+        return false;
+    }
+
+    if ((NULL == ptSerialConfig->pRcvBuf) ||
+        (NULL == ptSerialConfig->pSndBuf)) {
+        return false;
+    }
+
+    ptCtl->chState = START;
+    ptCtl->wEvent = EV_MASTER_NONE;
+    ptCtl->tSIO = *ptSerialConfig;
+    ptCtl->tSIO.hwRcvLen = 0;
+    ptCtl->tSIO.hwSndLen = 0;
+    ptCtl->bInitOk = 1;
+
+#ifdef C_MODBUS_NOBLOCK
+    soft_timer_init(get_tick_1ms, MAX_VALUE_32_BIT);
+#endif
+
+    return true;
+}
+
+bool mb_control_is_idle(mb_control_t *ptCtl)
+{
+    if (NULL != ptCtl) {
+        return ptCtl->tStatus == MB_STATUE_IDLE;
+    }
+    return false;
+}
+
 #if defined(C_MODBUS_MASTER_ENABLE)
 
 extern void port_hold_register_cb(const mb_master_t *ptMaster,
@@ -179,10 +228,12 @@ static bool master_recv_response(uint8_t *pchBuf,
 {
     if (hwLength < MB_SER_ADU_SIZE_MIN ||
         hwLength > MB_SER_ADU_SIZE_MAX) {
+//        SYSLOG_D("length(%d) err", hwLength);
         return false;
     }
 
     if (!VALID_MODBUS_FMT(pchBuf, hwLength)) {
+//        SYSLOG_D("modbus format err");
         return false;
     }
 
@@ -220,6 +271,7 @@ static bool master_recv_response(uint8_t *pchBuf,
             // case (0x80 + MB_CODE_WRITE_COIL):
             // case (0x80 + MB_CODE_WRITE_REGISTER):
         default:
+//            SYSLOG_D("nonsupport code ");
             return false;
     }
 
@@ -236,8 +288,8 @@ static bool master_do_action(mb_master_t *ptMaster, uint32_t wTimeout)
         return false;
     }
 
-    if ((ptMaster->tSerialCtl.hwRcvBufSize < MB_SER_ADU_SIZE_MAX) ||
-        (ptMaster->tSerialCtl.hwSndBufSize < MB_SER_ADU_SIZE_MAX)) {
+    if ((ptMaster->tSIO.hwRcvBufSize < MB_SER_ADU_SIZE_MAX) ||
+        (ptMaster->tSIO.hwSndBufSize < MB_SER_ADU_SIZE_MAX)) {
         return false;
     }
 
@@ -268,11 +320,9 @@ static bool master_do_action(mb_master_t *ptMaster, uint32_t wTimeout)
             return false;
     }
 
-    hwLength = master_send_request(ptMaster->tSerialCtl.pSndBuf,
-                                   &ptMaster->tRequest);
-
-    if (hwLength && hwLength <= ptMaster->tSerialCtl.hwSndBufSize) {
-        ptMaster->tSerialCtl.hwSndLen = hwLength;
+    hwLength = master_send_request(ptMaster->tSIO.pSndBuf, &ptMaster->tRequest);
+    if (hwLength && hwLength <= ptMaster->tSIO.hwSndBufSize) {
+        ptMaster->tSIO.hwSndLen = hwLength;
         ptMaster->tRequest.wTimeout = wTimeout;
         return true;
     }
@@ -295,6 +345,7 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
                               const mb_response_t *ptResponse)
 {
     if (ptRequest->chCode != ptResponse->chCode) {
+//        SYSLOG_F("code err %d %d", ptRequest->chCode, ptResponse->chCode);
         return false;
     }
 
@@ -302,11 +353,18 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
         case MB_CODE_READ_DISCRETE_INPUTS:
                 FALL_THROUGH();
         case MB_CODE_READ_COILS:
-                FALL_THROUGH();
+            if (CALC_READ_COILS_REQUIRED_BYTES(ptRequest->hwDataNum) !=
+                ptResponse->hwByteCount) {
+//                SYSLOG_F("read cl err %d %d", CALC_READ_COILS_REQUIRED_BYTES(ptRequest->hwDataNum), ptResponse->hwByteCount);
+                return false;
+            }
+            break;
+
         case MB_CODE_READ_INPUT_REGISTERS:
                 FALL_THROUGH();
         case MB_CODE_READ_HOLDING_REGISTERS:
             if (ptRequest->hwDataNum != (ptResponse->hwByteCount >> 1)) {
+//                SYSLOG_F("read hr err %d %d", ptRequest->hwDataNum, (ptResponse->hwByteCount >> 1));
                 return false;
             }
             break;
@@ -315,12 +373,15 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
                 FALL_THROUGH();
         case MB_CODE_WRITE_REGISTER:
             if (ptRequest->hwDataAddr != ptResponse->hwDataAddr) {
+//                SYSLOG_F("write err %d %d", ptRequest->hwDataAddr, ptResponse->hwDataAddr);
                 return false;
             }
             break;
         case MB_CODE_WRITE_MULTIPLE_REGISTERS:
             if (ptRequest->hwDataAddr != ptResponse->hwDataAddr ||
                 ptRequest->hwDataNum != ptResponse->hwDataNum) {
+//                SYSLOG_F("write err %d %d %d %d", ptRequest->hwDataAddr, ptResponse->hwDataAddr,
+//                         ptRequest->hwDataNum, ptResponse->hwDataNum);
                 return false;
             }
             break;
@@ -334,6 +395,7 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
 
 static void master_poll(mb_master_t *ptMaster)
 {
+    int32_t n;
     enum work_state {
         START = 0,
         WAIT_EVENT,
@@ -347,6 +409,7 @@ static void master_poll(mb_master_t *ptMaster)
     switch (ptMaster->chState) {
         case START:
             ptMaster->tStatus = MB_STATUE_IDLE;
+            ptMaster->chErr = 0;
 
                 FALL_THROUGH();
         case WAIT_EVENT:
@@ -366,40 +429,42 @@ static void master_poll(mb_master_t *ptMaster)
                                   ptMaster);
             if (NULL == ptMaster->tRequest.ptTimer) {
                 ptMaster->chState = HANDLE_ERROR;
+                ptMaster->chErr = MB_ERR_CREATE_TIMER;
                 break;
             }
 #endif
 #ifdef C_MODBUS_CLEAN_RECEIVER_BUFFER
             /*! clean receive buffer */
             do {
-                ptMaster->tSerialCtl.hwRcvLen = \
-                ptMaster->tSerialCtl.fnRecv(ptMaster->tSerialCtl.pRcvBuf,
-                                            ptMaster->tSerialCtl.hwRcvBufSize,
-                                            0);
-            } while (ptMaster->tSerialCtl.hwRcvLen > 0);
+                n = ptMaster->tSIO.fnRecv(ptMaster->tSIO.pRcvBuf,
+                                          ptMaster->tSIO.hwRcvBufSize, 0);
+            } while (n > 0);
 #endif
-            if (!ptMaster->tSerialCtl.fnSend(ptMaster->tSerialCtl.pSndBuf,
-                                             ptMaster->tSerialCtl.hwSndLen,
-                                             ptMaster->tRequest.wTimeout)) {
+            n = ptMaster->tSIO.fnSend(ptMaster->tSIO.pSndBuf,
+                                      ptMaster->tSIO.hwSndLen,
+                                      ptMaster->tRequest.wTimeout);
+            if (n <= 0) {
                 soft_timer_delete(ptMaster->tRequest.ptTimer);
                 ptMaster->chState = HANDLE_ERROR;
+                ptMaster->chErr = MB_ERR_SEND_FAILED;
                 break;
             }
 
                 FALL_THROUGH();
         case WAIT_RESPONSE:
             ptMaster->chState = WAIT_RESPONSE;
-            ptMaster->tSerialCtl.hwRcvLen = \
-                ptMaster->tSerialCtl.fnRecv(ptMaster->tSerialCtl.pRcvBuf,
-                                            ptMaster->tSerialCtl.hwRcvBufSize,
-                                            ptMaster->tRequest.wTimeout);
+            n = ptMaster->tSIO.fnRecv(ptMaster->tSIO.pRcvBuf,
+                                      ptMaster->tSIO.hwRcvBufSize,
+                                      ptMaster->tRequest.wTimeout);
 
 #ifdef C_MODBUS_NOBLOCK
             /*! read in poll mode*/
-            if (0 < ptMaster->tSerialCtl.hwRcvLen) {
+            if (0 < n) {
                 soft_timer_delete(ptMaster->tRequest.ptTimer);
                 ptMaster->chContinueCount = 0;
+                ptMaster->tSIO.hwRcvLen = (uint16_t)n;
             } else if (mb_wait_event(ptMaster, EV_MASTER_RECV_TIMEOUT)) {
+                ptMaster->chErr = MB_ERR_RECV_TIMEOUT;
                 ptMaster->chState = HANDLE_ERROR;
                 break;
             } else {
@@ -411,18 +476,14 @@ static void master_poll(mb_master_t *ptMaster)
             ptMaster->chState = CONTINUE_READ;
 
             /*! continue read data */
-            ptMaster->tSerialCtl.hwRcvLen += \
-                ptMaster->tSerialCtl.fnRecv(
-                ptMaster->tSerialCtl.pRcvBuf + ptMaster->tSerialCtl.hwRcvLen,
-                ptMaster->tSerialCtl.hwRcvBufSize
-                    + ptMaster->tSerialCtl.hwRcvLen,
-                0);
-
+            n = ptMaster->tSIO.fnRecv(ptMaster->tSIO.pRcvBuf + ptMaster->tSIO.hwRcvLen,
+                                      ptMaster->tSIO.hwRcvBufSize - ptMaster->tSIO.hwRcvLen, 0);
+            ptMaster->tSIO.hwRcvLen += (0 < n ? n : 0);
             if (++ptMaster->chContinueCount < MAXIMUM_READ_CONTINUE_COUNT) {
                 break;
             }
 #else
-                if (0 == ptMaster->tSerialCtl.hwRcvLen) {
+                if (0 == ptMaster->tSIO.hwRcvLen) {
                     ptMaster->chState = HANDLE_ERROR;
                     break;
                 }
@@ -430,9 +491,10 @@ static void master_poll(mb_master_t *ptMaster)
                 FALL_THROUGH();
         case HANDLE_RESPONSE:
             ptMaster->chState = HANDLE_RESPONSE;
-            if (!master_recv_response(ptMaster->tSerialCtl.pRcvBuf,
-                                      ptMaster->tSerialCtl.hwRcvLen,
+            if (!master_recv_response(ptMaster->tSIO.pRcvBuf,
+                                      ptMaster->tSIO.hwRcvLen,
                                       &ptMaster->tResponse)) {
+                ptMaster->chErr = MB_ERR_REQUEST;
                 ptMaster->chState = HANDLE_ERROR;
                 break;
             }
@@ -442,6 +504,8 @@ static void master_poll(mb_master_t *ptMaster)
                                    &ptMaster->tResponse);
                 ptMaster->chState = START;
                 break;
+            } else {
+                ptMaster->chErr = MB_ERR_RESPONSE;
             }
 
                 FALL_THROUGH();
@@ -464,51 +528,6 @@ void mb_master_poll(mb_master_t *ptMaster)
     }
 }
 
-bool mb_control_init(mb_control_t *ptCtl, serial_ctl_t *ptSerialConfig)
-{
-    enum { START = 0 };
-
-    if ((NULL == ptCtl) || (NULL == ptSerialConfig)) {
-        return false;
-    }
-
-    if ((0 == ptSerialConfig->hwRcvBufSize) ||
-        (0 == ptSerialConfig->hwSndBufSize)) {
-        return false;
-    }
-
-    if ((NULL == ptSerialConfig->fnRecv) ||
-        (NULL == ptSerialConfig->fnSend)) {
-        return false;
-    }
-
-    if ((NULL == ptSerialConfig->pRcvBuf) ||
-        (NULL == ptSerialConfig->pSndBuf)) {
-        return false;
-    }
-
-    ptCtl->chState = START;
-    ptCtl->wEvent = EV_MASTER_NONE;
-    ptCtl->tSerialCtl = *ptSerialConfig;
-    ptCtl->tSerialCtl.hwRcvLen = 0;
-    ptCtl->tSerialCtl.hwSndLen = 0;
-    ptCtl->bInitOk = 1;
-
-#ifdef C_MODBUS_NOBLOCK
-    soft_timer_init(get_tick_1ms, MAX_VALUE_32_BIT);
-#endif
-
-    return true;
-}
-
-bool mb_control_is_idle(mb_control_t *ptCtl)
-{
-    if (NULL != ptCtl) {
-        return ptCtl->tStatus == MB_STATUE_IDLE;
-    }
-    return false;
-}
-
 static int32_t do_request(mb_master_t *ptMaster, const mb_request_t *ptRequest)
 {
     if (&ptMaster->tRequest != ptRequest) {
@@ -518,7 +537,7 @@ static int32_t do_request(mb_master_t *ptMaster, const mb_request_t *ptRequest)
     if (master_do_action(ptMaster, ptRequest->wTimeout)) {
         ptMaster->tStatus = MB_STATUS_BUSY;
         mb_post_event(ptMaster, EV_MASTER_START_SEND);
-        return 1;
+        return 0;
     } else {
         mb_post_event(ptMaster, EV_MASTER_ERROR);
     }
@@ -694,68 +713,112 @@ int32_t mb_write_single_coil(mb_master_t *ptMaster,
 // -------------------------------------------------------------------------
 #if defined(C_MODBUS_SLAVE_ENABLE)
 
-extern void port_slave_cb(const mb_slave_t *ptSlave,
-                          mb_request_t *ptRequest,
-                          mb_response_t *ptResponse);
+extern void port_slave_cb(const mb_slave_t *ptSlave, mb_request_t *ptRequest);
 
-extern bool port_valid_slave_cb(const mb_slave_t *ptSlave,
-                                uint8_t chSlave);
+extern bool port_valid_slave_cb(const mb_slave_t *ptSlave, uint8_t chSlave);
 
-extern void port_slave_error_cb(const mb_slave_t *ptSlave,
-                                mb_request_t *ptRequest,
-                                mb_response_t *ptResponse);
+extern void port_slave_error_cb(const mb_slave_t *ptSlave, mb_request_t *ptRequest);
 
-static bool slave_rcv_handle(uint8_t *pchBuf,
-                             uint16_t hwLength,
-                             mb_request_t *ptRequest)
+static bool slave_rcv_handle(mb_slave_t *ptSlave, mb_request_t *ptRequest)
 {
-    if (hwLength < MB_SER_ADU_SIZE_MIN ||
-        hwLength > MB_SER_ADU_SIZE_MAX) {
+    if (ptSlave->tSIO.hwRcvLen < MB_SER_ADU_SIZE_MIN ||
+        ptSlave->tSIO.hwRcvLen > MB_SER_ADU_SIZE_MAX) {
         return false;
     }
 
-    if (!VALID_MODBUS_FMT(pchBuf, hwLength)) {
+    if (!VALID_MODBUS_FMT(ptSlave->tSIO.pRcvBuf,
+                          ptSlave->tSIO.hwRcvLen)) {
         return false;
     }
 
-    ptRequest->chSlave = pchBuf[0];
-    ptRequest->chCode = pchBuf[1];
+    ptRequest->chSlave = ptSlave->tSIO.pRcvBuf[0];
+    ptRequest->chCode = ptSlave->tSIO.pRcvBuf[1];
+
+    return true;
+}
+
+static bool slave_handle_request(mb_slave_t *ptSlave,
+                                 mb_request_t *ptRequest)
+{
+    uint16_t hwValue;
 
     switch (ptRequest->chCode) {
-        case MB_CODE_READ_INPUT_REGISTERS:
-            ptRequest->hwDataAddr = ((pchBuf[2] & 0x00FF) << 8) + pchBuf[3];
-            ptRequest->hwDataNum = ((pchBuf[4] & 0x00FF) << 8) + pchBuf[5];
+        case MB_CODE_WRITE_COIL:
+            ptRequest->hwDataAddr = CHAR_HL_SHORT(ptSlave->tSIO.pRcvBuf[2], ptSlave->tSIO.pRcvBuf[3]);
+            ptRequest->hwDataNum = 1;
+            hwValue = CHAR_HL_SHORT(ptSlave->tSIO.pRcvBuf[4], ptSlave->tSIO.pRcvBuf[5]);
+            if ((hwValue == 0) || (hwValue == 0xFF00)) {
+                ptRequest->pWR = &ptSlave->tSIO.pRcvBuf[4];
+            } else {
+                ptSlave->chExceptionCode = MB_EX_ILLEGAL_DATA_VALUE;
+                return false;
+            }
+            break;
+
+        case MB_CODE_WRITE_REGISTER:
+            ptRequest->hwDataAddr = CHAR_HL_SHORT(ptSlave->tSIO.pRcvBuf[2], ptSlave->tSIO.pRcvBuf[3]);
+            ptRequest->hwDataNum = 1;
+            ptRequest->pWR = &ptSlave->tSIO.pRcvBuf[4];
+            break;
+
+        case MB_CODE_WRITE_MULTIPLE_REGISTERS:
+            ptRequest->pWR = &ptSlave->tSIO.pRcvBuf[7];
+                    FALL_THROUGH();
+        case MB_CODE_READ_HOLDING_REGISTERS:
+            ptRequest->hwDataAddr = CHAR_HL_SHORT(ptSlave->tSIO.pRcvBuf[2], ptSlave->tSIO.pRcvBuf[3]);
+            ptRequest->hwDataNum = CHAR_HL_SHORT(ptSlave->tSIO.pRcvBuf[4], ptSlave->tSIO.pRcvBuf[5]);
+            if ((MB_READ_REG_CNT_MIN > ptRequest->hwDataNum) ||
+                (MB_READ_REG_CNT_MAX < ptRequest->hwDataNum)) {
+                ptSlave->chExceptionCode = MB_EX_ILLEGAL_DATA_VALUE;
+                return false;
+            }
+            break;
+
+//        case MB_CODE_WRITE_MULTIPLE_COILS:
+//            ptRequest->pWR = &ptSlave->tSIO.pRcvBuf[7];
+//                    FALL_THROUGH();
+        case MB_CODE_READ_COILS:
+            ptRequest->hwDataAddr = CHAR_HL_SHORT(ptSlave->tSIO.pRcvBuf[2], ptSlave->tSIO.pRcvBuf[3]);
+            ptRequest->hwDataNum = CHAR_HL_SHORT(ptSlave->tSIO.pRcvBuf[4], ptSlave->tSIO.pRcvBuf[5]);
+            if ((MB_READ_COIL_CNT_MIN > ptRequest->hwDataNum) ||
+                (MB_READ_COIL_CNT_MAX < ptRequest->hwDataNum)) {
+                ptSlave->chExceptionCode = MB_EX_ILLEGAL_DATA_VALUE;
+                return false;
+            }
             break;
 
         default:
-            break;
+            ptSlave->chExceptionCode = MB_EX_ILLEGAL_FUNCTION;
+            return false;
     }
 
     return true;
 }
 
-static bool slave_handle_request(mb_request_t *ptRequest,
-                                 mb_response_t *ptResponse)
-{
-    switch (ptRequest->chCode) {
-        case MB_CODE_READ_INPUT_REGISTERS:
-            break;
+bool slave_error_default_cb(const mb_slave_t *ptSlave, mb_request_t *ptRequest) {
 
+    uint16_t hwCrc;
+
+    switch (ptSlave->chExceptionCode) {
         default:
-            ptResponse->chCode = MB_EX_ILLEGAL_FUNCTION;
             return false;
-    }
 
-    switch (ptRequest->chCode) {
-        default:
-        case MB_CODE_READ_INPUT_REGISTERS:
-            if ((MB_READ_REG_CNT_MIN > ptRequest->hwDataNum) ||
-                (MB_READ_REG_CNT_MAX < ptRequest->hwDataNum)) {
-                ptResponse->chCode = MB_EX_ILLEGAL_DATA_VALUE;
-                return false;
-            }
+        case MB_EX_ILLEGAL_FUNCTION:
+            ptSlave->tSIO.pSndBuf[2] = 0x01;
             break;
+
+        case MB_EX_ILLEGAL_DATA_VALUE:
+            ptSlave->tSIO.pSndBuf[2] = 0x03;
+            break;
+
     }
+    ptSlave->tSIO.pSndBuf[0] = ptRequest->chSlave;
+    ptSlave->tSIO.pSndBuf[1] = ptRequest->chCode + 0x80;
+
+    hwCrc = MODBUS_CRC16(ptSlave->tSIO.pSndBuf, 3);
+    ptSlave->tSIO.pSndBuf[3] = hwCrc;
+    ptSlave->tSIO.pSndBuf[4] = hwCrc >> 8;
+    ptSlave->tSIO.fnSend(ptSlave->tSIO.pSndBuf, 5, 25);
 
     return true;
 }
@@ -775,9 +838,9 @@ void mb_slave_push(mb_slave_t *ptSlave)
 
         case READ_DATA:
             ptSlave->chState = READ_DATA;
-            if (0 == \
-                ptSlave->tSerialCtl.fnRecv(ptSlave->tSerialCtl.pRcvBuf,
-                                           ptSlave->tSerialCtl.hwRcvBufSize)) {
+            ptSlave->tSIO.hwRcvLen = \
+                    ptSlave->tSIO.fnRecv(ptSlave->tSIO.pRcvBuf, ptSlave->tSIO.hwRcvBufSize, 0);
+            if (0 == ptSlave->tSIO.hwRcvLen) {
                 break;
             }
 
@@ -786,14 +849,12 @@ void mb_slave_push(mb_slave_t *ptSlave)
             ptSlave->chState = CHECK_REQUEST;
             ptSlave->tStatus = MB_STATUS_BUSY;
             if (!port_valid_slave_cb(ptSlave,
-                                     ptSlave->tSerialCtl.pRcvBuf[0])) {
+                                     ptSlave->tSIO.pRcvBuf[0])) {
                 ptSlave->chState = START;
                 break;
             }
 
-            if (!slave_rcv_handle(ptSlave->tSerialCtl.pRcvBuf,
-                                  ptSlave->tSerialCtl.hwRcvLen,
-                                  &ptSlave->tRequest)) {
+            if (!slave_rcv_handle(ptSlave, &ptSlave->tRequest)) {
                 ptSlave->chState = START;
                 break;
             }
@@ -801,11 +862,12 @@ void mb_slave_push(mb_slave_t *ptSlave)
                 FALL_THROUGH();
         case HANDLE_REQUEST:
             ptSlave->chState = HANDLE_REQUEST;
-            if (slave_handle_request(&ptSlave->tRequest, &ptSlave->tResponse)) {
-                port_slave_cb(ptSlave, &ptSlave->tRequest, &ptSlave->tResponse);
+            if (slave_handle_request(ptSlave, &ptSlave->tRequest)) {
+                port_slave_cb(ptSlave, &ptSlave->tRequest);
             } else {
-                port_slave_error_cb(ptSlave, &ptSlave->tRequest,
-                                    &ptSlave->tResponse);
+                if (!slave_error_default_cb(ptSlave, &ptSlave->tRequest)) {
+                    port_slave_error_cb(ptSlave, &ptSlave->tRequest);
+                }
             }
 
                 FALL_THROUGH();

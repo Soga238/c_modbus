@@ -19,7 +19,7 @@ extern "C" {
 #endif
 /* Includes --------------------------------------------------------*/
 #include "./modbus_config.h"
-#include "../soft_timer/soft_timer.h"
+#include "../../service/soft_timer/soft_timer.h"
 
 /* Global variables ------------------------------------------------*/
 extern uint32_t get_tick_1ms(void);
@@ -54,9 +54,12 @@ typedef struct mb_request {
     const uint16_t *phwWR;       /*! 数据值发送缓区      */
 
     /*!! 保存写入单个数据时存放的数据 */
-    uint16_t hwValue;
+    union {
+        uint16_t hwValue;
+        uint32_t wValue;
+    };
 
-    uint8_t chSlave;             /*! 从机站台号          */
+    uint8_t  chSlave;             /*! 从机站台号          */
     uint8_t chCode;              /*! 功能码              */
     uint16_t hwDataAddr;         /*! 数据地址            */
     uint16_t hwDataNum;          /*! 数据读取或写入个数   */
@@ -84,7 +87,7 @@ typedef enum {
 typedef struct {
     mb_request_t tRequest;       /*! modbus请求结构体    */
     mb_response_t tResponse;     /*! modbus应答结构体    */
-    serial_ctl_t tSerialCtl;     /*! 串口操作结构体      */
+    serial_ctl_t tSIO;           /*! 串口操作结构体      */
 
     uint8_t chState;             /*! 内部状态机变量      */
     mb_eu_state_t tStatus;
@@ -92,7 +95,8 @@ typedef struct {
     uint8_t bInitOk : 1;
     uint32_t wEvent;             /*! 内部事件变量        */
     uint8_t chContinueCount;
-
+    uint8_t chExceptionCode;
+    uint8_t chErr;
     /*! mb_err_code__t tErrorNum; */
 } mb_control_t, mb_master_t, mb_slave_t;
 
@@ -137,7 +141,16 @@ typedef struct {
 #define MB_EX_GATEWAY_PATH_FAILED               0x0A  /*! 不可用网关路径 */
 #define MB_EX_GATEWAY_TGT_FAILED                0x0B  /*! 网关目标设备响应失败 */
 
+#define MB_ERR_SEND_FAILED                      1
+#define MB_ERR_RECV_TIMEOUT                     2
+#define MB_ERR_CREATE_TIMER                     3
+#define MB_ERR_REQUEST                          4
+#define MB_ERR_RESPONSE                         5
+#define MB_ERR_NONSUPPORT                       6
+
 /* Global macro ----------------------------------------------------*/
+#define MB_GET_ERROR(MASTER_SLAVE_PTR)          ((MASTER_SLAVE_PTR)->chErr)
+
 /* Global variables ------------------------------------------------*/
 /* Global function prototypes --------------------------------------*/
 #if defined(C_MODBUS_MASTER_ENABLE)
