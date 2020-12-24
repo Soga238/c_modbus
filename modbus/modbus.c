@@ -18,7 +18,7 @@
 /* Global variables ------------------------------------------------*/
 /* Private typedef -------------------------------------------------*/
 /* Private define --------------------------------------------------*/
-#define MB_SER_ADU_SIZE_MIN             (6)        /*! RTU串行帧的最小长度 */
+#define MB_SER_ADU_SIZE_MIN             (5)        /*! RTU串行帧的最小长度 */
 #define MB_SER_ADU_SIZE_MAX             (256)      /*! RTU串行帧的最大长度 */
 
 // (PDU_SIZE + 3) = ADU_SIZE
@@ -30,7 +30,7 @@
 #define EV_MASTER_ERROR                 (1 << 2)
 #define EV_MASTER_START_SEND            (1 << 3)
 
-#define MAXIMUM_READ_CONTINUE_COUNT     2
+#define MAXIMUM_READ_CONTINUE_COUNT     10
 /* Private macro ---------------------------------------------------*/
 #define CALC_MODBUS_CRC16(PTR, SIZE)     MODBUS_CRC16(PTR, SIZE)
 #define VALID_MODBUS_FMT(PTR, SIZE)      valid_modbus_crc(PTR, SIZE)
@@ -233,7 +233,7 @@ static bool master_recv_response(uint8_t *pchBuf,
     }
 
     if (!VALID_MODBUS_FMT(pchBuf, hwLength)) {
-//        SYSLOG_D("modbus format err");
+//        SYSLOG_D("modbus format err, length=%d", hwLength);
         return false;
     }
 
@@ -264,12 +264,18 @@ static bool master_recv_response(uint8_t *pchBuf,
             ptResponse->hwDataNum = CHAR_HL_SHORT(pchBuf[4], pchBuf[5]);
             break;
 
-            // case (0x80 + MB_CODE_READ_INPUT_REGISTERS):
-            // case (0x80 + MB_CODE_READ_HOLDING_REGISTERS):
-            // case (0x80 + MB_CODE_READ_DISCRETE_INPUTS):
-            // case (0x80 + MB_CODE_READ_COILS):
-            // case (0x80 + MB_CODE_WRITE_COIL):
-            // case (0x80 + MB_CODE_WRITE_REGISTER):
+        case (0x80 + MB_CODE_READ_INPUT_REGISTERS):
+            FALL_THROUGH();
+        case (0x80 + MB_CODE_READ_HOLDING_REGISTERS):
+            FALL_THROUGH();
+        case (0x80 + MB_CODE_READ_DISCRETE_INPUTS):
+            FALL_THROUGH();
+        case (0x80 + MB_CODE_READ_COILS):
+            FALL_THROUGH();
+        case (0x80 + MB_CODE_WRITE_COIL):
+            FALL_THROUGH();
+        case (0x80 + MB_CODE_WRITE_REGISTER):
+             return false;
         default:
 //            SYSLOG_D("nonsupport code ");
             return false;
@@ -421,6 +427,13 @@ static void master_poll(mb_master_t *ptMaster)
                 FALL_THROUGH();
         case SEND_REQUEST:
             ptMaster->chState = SEND_REQUEST;
+#ifdef C_MODBUS_CLEAN_RECEIVER_BUFFER
+            /*! clean receive buffer */
+            do {
+                n = ptMaster->tSIO.fnRecv(ptMaster->tSIO.pRcvBuf,
+                                          ptMaster->tSIO.hwRcvBufSize, 0);
+            } while (n > 0);
+#endif
 #ifdef C_MODBUS_NOBLOCK
             ptMaster->tRequest.ptTimer = \
                 soft_timer_create(ptMaster->tRequest.wTimeout,
@@ -433,13 +446,6 @@ static void master_poll(mb_master_t *ptMaster)
                 break;
             }
 #endif
-#ifdef C_MODBUS_CLEAN_RECEIVER_BUFFER
-            /*! clean receive buffer */
-            do {
-                n = ptMaster->tSIO.fnRecv(ptMaster->tSIO.pRcvBuf,
-                                          ptMaster->tSIO.hwRcvBufSize, 0);
-            } while (n > 0);
-#endif
             n = ptMaster->tSIO.fnSend(ptMaster->tSIO.pSndBuf,
                                       ptMaster->tSIO.hwSndLen,
                                       ptMaster->tRequest.wTimeout);
@@ -449,6 +455,8 @@ static void master_poll(mb_master_t *ptMaster)
                 ptMaster->chErr = MB_ERR_SEND_FAILED;
                 break;
             }
+
+            soft_timer_reset(ptMaster->tRequest.ptTimer);
 
                 FALL_THROUGH();
         case WAIT_RESPONSE:
@@ -460,7 +468,6 @@ static void master_poll(mb_master_t *ptMaster)
 #ifdef C_MODBUS_NOBLOCK
             /*! read in poll mode*/
             if (0 < n) {
-                soft_timer_delete(ptMaster->tRequest.ptTimer);
                 ptMaster->chContinueCount = 0;
                 ptMaster->tSIO.hwRcvLen = (uint16_t)n;
             } else if (mb_wait_event(ptMaster, EV_MASTER_RECV_TIMEOUT)) {
@@ -478,10 +485,23 @@ static void master_poll(mb_master_t *ptMaster)
             /*! continue read data */
             n = ptMaster->tSIO.fnRecv(ptMaster->tSIO.pRcvBuf + ptMaster->tSIO.hwRcvLen,
                                       ptMaster->tSIO.hwRcvBufSize - ptMaster->tSIO.hwRcvLen, 0);
-            ptMaster->tSIO.hwRcvLen += (0 < n ? n : 0);
-            if (++ptMaster->chContinueCount < MAXIMUM_READ_CONTINUE_COUNT) {
+            if (mb_wait_event(ptMaster, EV_MASTER_RECV_TIMEOUT)) {
+                ptMaster->tSIO.hwRcvLen += (0 < n ? n : 0);
+            }
+#ifdef C_MODBUS_CONTINUE_READ
+            else if (ptMaster->chContinueCount > MAXIMUM_READ_CONTINUE_COUNT) {
+                soft_timer_delete(ptMaster->tRequest.ptTimer);
+            } else {
+                ptMaster->tSIO.hwRcvLen += (0 < n ? n : 0);
+                ptMaster->chContinueCount = (0 < n ? 0 : ptMaster->chContinueCount + 1);
                 break;
             }
+#else
+            else {
+                ptMaster->tSIO.hwRcvLen += (0 < n ? n : 0);
+                break;
+            }
+#endif
 #else
                 if (0 == ptMaster->tSIO.hwRcvLen) {
                     ptMaster->chState = HANDLE_ERROR;

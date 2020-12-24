@@ -153,13 +153,13 @@ typedef struct {
 
 /* Global variables ------------------------------------------------*/
 /* Global function prototypes --------------------------------------*/
-#if defined(C_MODBUS_MASTER_ENABLE)
-
+#if defined(C_MODBUS_MASTER_ENABLE) | defined(C_MODBUS_SLAVE_ENABLE)
 extern bool mb_control_init(mb_control_t *ptCtl,
                             serial_ctl_t *ptSerialConfig);
-
 extern bool mb_control_is_idle(mb_control_t *ptCtl);
+#endif
 
+#if defined(C_MODBUS_MASTER_ENABLE)
 #define mb_master_init      mb_control_init
 #define mb_master_is_idle   mb_control_is_idle
 

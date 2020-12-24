@@ -24,10 +24,11 @@ extern "C" {
 /* Global variables ------------------------------------------------*/
 /* Global typedef --------------------------------------------------*/
 /* Global define ---------------------------------------------------*/
-#define C_MODBUS_MASTER_ENABLE
-// #define C_MODBUS_SLAVE_ENABLE
+//#define C_MODBUS_MASTER_ENABLE
+#define C_MODBUS_SLAVE_ENABLE
 #define C_MODBUS_NOBLOCK
-// #define C_MODBUS_CLEAN_RECEIVER_BUFFER
+#define C_MODBUS_CLEAN_RECEIVER_BUFFER
+//#define C_MODBUS_CONTINUE_READ
 
 /* Global macro ----------------------------------------------------*/
 /* Global variables ------------------------------------------------*/
