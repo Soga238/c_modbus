@@ -30,7 +30,7 @@
 #define EV_MASTER_ERROR                 (1 << 2)
 #define EV_MASTER_START_SEND            (1 << 3)
 
-#define MAXIMUM_READ_CONTINUE_COUNT     10
+#define MAXIMUM_READ_CONTINUE_COUNT     2
 /* Private macro ---------------------------------------------------*/
 #define CALC_MODBUS_CRC16(PTR, SIZE)     MODBUS_CRC16(PTR, SIZE)
 #define VALID_MODBUS_FMT(PTR, SIZE)      valid_modbus_crc(PTR, SIZE)
@@ -188,7 +188,7 @@ static uint16_t master_send_request(uint8_t *pchBuf,
 
         case MB_CODE_WRITE_REGISTER:
             short_copy_xch(&pchBuf[4],
-                           ptRequest->phwWR,
+                           ptRequest->pWR,
                            ptRequest->hwDataNum,
                            true);
             hwLength = 4 + (ptRequest->hwDataNum << 1);
@@ -197,7 +197,7 @@ static uint16_t master_send_request(uint8_t *pchBuf,
         case MB_CODE_WRITE_MULTIPLE_REGISTERS:
             pchBuf[6] = ptRequest->hwDataNum << 1;
             short_copy_xch(&pchBuf[7],
-                           ptRequest->phwWR,
+                           ptRequest->pWR,
                            ptRequest->hwDataNum,
                            true);
             hwLength = 4 + 3 + pchBuf[6];
@@ -205,7 +205,7 @@ static uint16_t master_send_request(uint8_t *pchBuf,
 
         case MB_CODE_WRITE_COIL:
             short_copy_xch(&pchBuf[4],
-                           ptRequest->phwWR,
+                           ptRequest->pWR,
                            ptRequest->hwDataNum,
                            true);
             hwLength = 4 + (ptRequest->hwDataNum << 1);
@@ -228,12 +228,10 @@ static bool master_recv_response(uint8_t *pchBuf,
 {
     if (hwLength < MB_SER_ADU_SIZE_MIN ||
         hwLength > MB_SER_ADU_SIZE_MAX) {
-//        SYSLOG_D("length(%d) err", hwLength);
         return false;
     }
 
     if (!VALID_MODBUS_FMT(pchBuf, hwLength)) {
-//        SYSLOG_D("modbus format err, length=%d", hwLength);
         return false;
     }
 
@@ -277,7 +275,6 @@ static bool master_recv_response(uint8_t *pchBuf,
         case (0x80 + MB_CODE_WRITE_REGISTER):
              return false;
         default:
-//            SYSLOG_D("nonsupport code ");
             return false;
     }
 
@@ -351,7 +348,6 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
                               const mb_response_t *ptResponse)
 {
     if (ptRequest->chCode != ptResponse->chCode) {
-//        SYSLOG_F("code err %d %d", ptRequest->chCode, ptResponse->chCode);
         return false;
     }
 
@@ -361,7 +357,6 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
         case MB_CODE_READ_COILS:
             if (CALC_READ_COILS_REQUIRED_BYTES(ptRequest->hwDataNum) !=
                 ptResponse->hwByteCount) {
-//                SYSLOG_F("read cl err %d %d", CALC_READ_COILS_REQUIRED_BYTES(ptRequest->hwDataNum), ptResponse->hwByteCount);
                 return false;
             }
             break;
@@ -370,7 +365,6 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
                 FALL_THROUGH();
         case MB_CODE_READ_HOLDING_REGISTERS:
             if (ptRequest->hwDataNum != (ptResponse->hwByteCount >> 1)) {
-//                SYSLOG_F("read hr err %d %d", ptRequest->hwDataNum, (ptResponse->hwByteCount >> 1));
                 return false;
             }
             break;
@@ -379,15 +373,12 @@ static bool is_req_resp_match(const mb_request_t *ptRequest,
                 FALL_THROUGH();
         case MB_CODE_WRITE_REGISTER:
             if (ptRequest->hwDataAddr != ptResponse->hwDataAddr) {
-//                SYSLOG_F("write err %d %d", ptRequest->hwDataAddr, ptResponse->hwDataAddr);
                 return false;
             }
             break;
         case MB_CODE_WRITE_MULTIPLE_REGISTERS:
             if (ptRequest->hwDataAddr != ptResponse->hwDataAddr ||
                 ptRequest->hwDataNum != ptResponse->hwDataNum) {
-//                SYSLOG_F("write err %d %d %d %d", ptRequest->hwDataAddr, ptResponse->hwDataAddr,
-//                         ptRequest->hwDataNum, ptResponse->hwDataNum);
                 return false;
             }
             break;
@@ -674,7 +665,7 @@ int32_t mb_write_hold_register(mb_master_t *ptMaster,
     ptRequest->hwDataNum = 1;
     ptRequest->chCode = MB_CODE_WRITE_REGISTER;
     ptRequest->hwValue = hwValue;
-    ptRequest->phwWR = &ptRequest->hwValue;
+    ptRequest->pWR = &ptRequest->hwValue;
     ptRequest->wTimeout = wTimeout;
 
     return do_request(ptMaster, ptRequest);
@@ -697,7 +688,7 @@ int32_t mb_write_hold_multi_register(mb_master_t *ptMaster,
     ptRequest->hwDataAddr = hwDataAddr;
     ptRequest->hwDataNum = hwDataNumber;
     ptRequest->chCode = MB_CODE_WRITE_MULTIPLE_REGISTERS;
-    ptRequest->phwWR = phwBuf;
+    ptRequest->pWR = phwBuf;
     ptRequest->wTimeout = wTimeout;
 
     return do_request(ptMaster, ptRequest);
@@ -720,7 +711,7 @@ int32_t mb_write_single_coil(mb_master_t *ptMaster,
     ptRequest->hwDataNum = 1;
     ptRequest->chCode = MB_CODE_WRITE_COIL;
     ptRequest->hwValue = (chSwitch == 0 ? 0x0000 : 0xFF00);
-    ptRequest->phwWR = &ptRequest->hwValue;
+    ptRequest->pWR = &ptRequest->hwValue;
     ptRequest->wTimeout = wTimeout;
 
     return do_request(ptMaster, ptRequest);

@@ -20,15 +20,15 @@ extern "C" {
 /* Includes --------------------------------------------------------*/
 #include "../../utility/lz_types.h"
 #include "../../utility/lz_utils.h"
+#include "../../utility/lz_common.h"
 
 /* Global variables ------------------------------------------------*/
 /* Global typedef --------------------------------------------------*/
 /* Global define ---------------------------------------------------*/
 //#define C_MODBUS_MASTER_ENABLE
-#define C_MODBUS_SLAVE_ENABLE
+ #define C_MODBUS_SLAVE_ENABLE
 #define C_MODBUS_NOBLOCK
-#define C_MODBUS_CLEAN_RECEIVER_BUFFER
-//#define C_MODBUS_CONTINUE_READ
+// #define C_MODBUS_CLEAN_RECEIVER_BUFFER
 
 /* Global macro ----------------------------------------------------*/
 /* Global variables ------------------------------------------------*/

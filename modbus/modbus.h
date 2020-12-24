@@ -51,7 +51,7 @@ typedef struct mb_request {
     timer_table_t *ptTimer;      /*! 软定时器结构体指针  */
 
     uint16_t *phwHR;             /*! 数据值接收缓区      */
-    const uint16_t *phwWR;       /*! 数据值发送缓区      */
+    const void *pWR;             /*! 数据值发送缓区      */
 
     /*!! 保存写入单个数据时存放的数据 */
     union {
@@ -59,7 +59,7 @@ typedef struct mb_request {
         uint32_t wValue;
     };
 
-    uint8_t  chSlave;             /*! 从机站台号          */
+    uint8_t  chSlave;            /*! 从机站台号          */
     uint8_t chCode;              /*! 功能码              */
     uint16_t hwDataAddr;         /*! 数据地址            */
     uint16_t hwDataNum;          /*! 数据读取或写入个数   */
